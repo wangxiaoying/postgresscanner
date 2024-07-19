@@ -32,11 +32,23 @@ static unique_ptr<FunctionData> PGQueryBind(ClientContext &context, TableFunctio
 	auto &transaction = Transaction::Get(context, catalog).Cast<PostgresTransaction>();
 	auto sql = input.inputs[1].GetValue<string>();
 	// strip any trailing semicolons
+    vector<string> sqls;
 	StringUtil::RTrim(sql);
-	while (!sql.empty() && sql.back() == ';') {
-		sql = sql.substr(0, sql.size() - 1);
-		StringUtil::RTrim(sql);
-	}
+    size_t pos = 0;
+    while ((pos = sql.find(';')) != string::npos) {
+        auto s = sql.substr(0, pos);
+        StringUtil::RTrim(s);
+        if (!s.empty()) {
+            sqls.push_back(std::move(s));
+        }
+        sql = sql.substr(pos+1, string::npos);
+        StringUtil::LTrim(sql);
+    }
+    if (!sql.empty()) {
+        sqls.push_back(std::move(sql));
+    }
+    sql = sqls[0]; // use the first query to fetch schema info
+    auto estimated_cardinality = input.inputs[2].GetValue<idx_t>();
 
 	auto &con = transaction.GetConnection();
 	auto conn = con.GetConn();
@@ -81,16 +93,25 @@ static unique_ptr<FunctionData> PGQueryBind(ClientContext &context, TableFunctio
 	result->names = names;
 	result->read_only = false;
 	result->SetTablePages(0);
-	result->sql = std::move(sql);
+    result->max_threads = MaxValue<idx_t>(sqls.size(), 1);
+    result->sqls = std::move(sqls);
+    result->estimated_cardinality = estimated_cardinality;
+    result->requires_materialization = false; // materialize only use single thread
 	return std::move(result);
 }
 
+unique_ptr<NodeStatistics> PQQueryCardinality(ClientContext &context, const FunctionData *bind_data_p) {
+	auto &bind_data = bind_data_p->Cast<PostgresBindData>();
+	return make_uniq<NodeStatistics>(bind_data.estimated_cardinality);
+}
+
 PostgresQueryFunction::PostgresQueryFunction()
-    : TableFunction("postgres_query", {LogicalType::VARCHAR, LogicalType::VARCHAR}, nullptr, PGQueryBind) {
+    : TableFunction("postgres_query", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::INTEGER}, nullptr, PGQueryBind) {
 	PostgresScanFunction scan_function;
 	init_global = scan_function.init_global;
 	init_local = scan_function.init_local;
 	function = scan_function.function;
+    cardinality = PQQueryCardinality;
 	projection_pushdown = true;
 }
 } // namespace duckdb

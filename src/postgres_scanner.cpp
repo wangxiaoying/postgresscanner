@@ -228,13 +228,21 @@ static void PostgresInitInternal(ClientContext &context, const PostgresBindData 
 		filter += filter_string;
 	}
 	if (bind_data->table_name.empty()) {
-		D_ASSERT(!bind_data->sql.empty());
-		lstate.sql = StringUtil::Format(
-		    R"(
-	COPY (SELECT %s FROM (%s) AS __unnamed_subquery %s) TO STDOUT (FORMAT binary);
-	)",
-		    col_names, bind_data->sql, filter);
+        if (!bind_data->sqls.empty()) {
+            lstate.sql = StringUtil::Format(
+    		    R"(
+    	COPY (SELECT %s FROM (%s) AS __unnamed_subquery %s) TO STDOUT (FORMAT binary);
+    	)",
+    		    col_names, bind_data->sqls[lstate.batch_idx], filter);
+        } else {
+    		D_ASSERT(!bind_data->sql.empty());
+    		lstate.sql = StringUtil::Format(
+    		    R"(
+    	COPY (SELECT %s FROM (%s) AS __unnamed_subquery %s) TO STDOUT (FORMAT binary);
+    	)",
+    		    col_names, bind_data->sql, filter);
 
+        }
 	} else {
 		lstate.sql = StringUtil::Format(
 		    R"(
@@ -318,6 +326,18 @@ static bool PostgresParallelStateNext(ClientContext &context, const FunctionData
 
 	lock_guard<mutex> parallel_lock(gstate.lock);
 	lstate.batch_idx = gstate.batch_idx++;
+
+    // parallel with input partitioned sqls
+    if (!bind_data->sqls.empty()) {
+        if (lstate.batch_idx < bind_data->sqls.size()) {
+            PostgresInitInternal(context, bind_data, lstate, 0, POSTGRES_TID_MAX);
+            return true;
+        }
+        lstate.done = true;
+        return false;
+    }
+
+    // parallel by partition the table here
 	if (gstate.page_idx < bind_data->pages_approx) {
 		auto page_max = gstate.page_idx + bind_data->pages_per_task;
 		if (page_max >= bind_data->pages_approx) {
@@ -380,7 +400,7 @@ static unique_ptr<LocalTableFunctionState> GetLocalState(ClientContext &context,
 		local_state->no_connection = true;
 		return std::move(local_state);
 	}
-	if (bind_data.pages_approx == 0 || bind_data.requires_materialization) {
+	if (bind_data.sqls.empty() && (bind_data.pages_approx == 0 || bind_data.requires_materialization)) {
 		PostgresInitInternal(context, &bind_data, *local_state, 0, POSTGRES_TID_MAX);
 		gstate.page_idx = POSTGRES_TID_MAX;
 	} else if (!PostgresParallelStateNext(context, input.bind_data.get(), *local_state, gstate)) {

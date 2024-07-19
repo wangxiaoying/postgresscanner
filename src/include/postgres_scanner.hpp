@@ -26,6 +26,8 @@ struct PostgresBindData : public FunctionData {
 	string schema_name;
 	string table_name;
 	string sql;
+    vector<string> sqls; // queries with the same schema that form a single table
+    idx_t estimated_cardinality = 0;
 	idx_t pages_approx = 0;
 
 	vector<PostgresType> postgres_types;
