@@ -91,7 +91,7 @@ static unique_ptr<FunctionData> PGQueryBind(ClientContext &context, TableFunctio
 	result->dsn = con.GetDSN();
 	result->types = return_types;
 	result->names = names;
-	result->read_only = false;
+	result->read_only = (sqls.size() > 1); // read only otherwise cannot enable parallelism in `PostgresOptimizer::Optimize`
 	result->SetTablePages(0);
     result->max_threads = MaxValue<idx_t>(sqls.size(), 1);
     result->sqls = std::move(sqls);
